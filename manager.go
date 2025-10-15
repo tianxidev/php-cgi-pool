@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -183,8 +184,8 @@ func (m *Manager) monitorWorker(worker *Worker) {
 	m.workerLock.Unlock()
 
 	if m.running {
-		log.Printf("工作进程 %d 退出: %v, 5秒后重启", worker.ID, err)
-		time.Sleep(5 * time.Second)
+		log.Printf("工作进程 %d 退出: %v, 2 秒后重启", worker.ID, err)
+		time.Sleep(2 * time.Second)
 		m.restartWorker(worker)
 	}
 }
@@ -420,6 +421,17 @@ func (m *Manager) selectWorker() *Worker {
 	return youngestWorker
 }
 
+// ignoreCommonErrors 忽略常见的网络错误
+func (m *Manager) ignoreCommonErrors(err error) bool {
+	if err == nil {
+		return true
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "forcibly closed by the remote host") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "connection reset by peer")
+}
+
 // forwardData 转发数据
 func (m *Manager) forwardData(client, backend net.Conn) bool {
 	var wg sync.WaitGroup
@@ -446,12 +458,18 @@ func (m *Manager) forwardData(client, backend net.Conn) bool {
 		return true
 	}
 
-	// 记录错误信息
+	// 检查客户端错误
 	if clientErr != nil {
-		log.Printf("客户端写入错误: %v", clientErr)
+		if !m.ignoreCommonErrors(clientErr) {
+			log.Printf("客户端写入错误: %v", clientErr)
+		}
 	}
+
+	// 检查后端错误
 	if backendErr != nil {
-		log.Printf("后端写入错误: %v", backendErr)
+		if !m.ignoreCommonErrors(backendErr) {
+			log.Printf("后端写入错误: %v", backendErr)
+		}
 	}
 
 	return false
@@ -489,6 +507,7 @@ func handleSignals(manager *Manager) {
 
 	manager.Stop()
 
+	// 等待一会儿让Stop()方法执行完毕
 	time.Sleep(2 * time.Second)
 
 	log.Println("程序将在 3 秒后退出")
